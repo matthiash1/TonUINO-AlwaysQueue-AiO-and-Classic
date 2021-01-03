@@ -1,4 +1,4 @@
-
+	
 
 /****** Alternative Software *************
    _____         _____ ___ ___ _______
@@ -144,6 +144,10 @@
 // uncomment or comment the " #define .... "  to enable or disable the additional function
 
 
+// --------------------- Pause when card away --- AiO und Classic ------------------------------------------------------------
+#define CardPause                // Die Wiedergabe wird bei Entfernen der Karte pausiert
+
+
 // --------------------- Debug Modus --- AiO und Classic ------------------------------------------------------------
 #define Konsole                // Zum Einsparen von Programmspeicher wird die Ausgabe
                                // auf den Seriellen Monitor nur bei Freigabe ausgeführt.
@@ -186,7 +190,7 @@ const uint8_t MenueVolume = 20;  // Bei Deaktivierung von MenueVol wird die Men�
                                // zu verwenden.
 #endif
 // -------------------- Abschaltung über Hardware --- AiO und Classic ------------------------------------------------------
-#define HW_PowerOff            // Abschaltung über Hardware, wie Mosfet oder Pololu-Switch
+//#define HW_PowerOff            // Abschaltung über Hardware, wie Mosfet oder Pololu-Switch
                                // Hardwareerweiterung für TonUINO Classc erforderlich. Mosfet oder Pololu-Switch
                                // Auf der AiO Platine ist die erforderliche Hardware bereits vorhanden
   #ifdef HW_PowerOff
@@ -213,7 +217,7 @@ const uint8_t MenueVolume = 20;  // Bei Deaktivierung von MenueVol wird die Men�
     #endif 
    
 // -------------------- Lautsprecher abschaltung über Software ---AiO auch über KH Buchse --------------------------------------
-#define SpkOnOff              // Aus und Einschalten des Lautsprechers über Software 
+//#define SpkOnOff              // Aus und Einschalten des Lautsprechers über Software 
                               // zur Unterdrückung des Einschaltgeräusches und
                               // Möglichkeit der Abschaltung beim Anschluss eines Kopfhörers (AiO über KH-Buchse )
                               // Hardwareerweiterung für TonUINO Classic erforderlich: (Abschaltung des Lautsprechers über MOS-FET's)
@@ -359,8 +363,8 @@ const uint8_t setVolChSp = 8 ;  // Vorgabe Geschwindigkeit Volume Änderung bei 
 
 #define ButtonPause A0            // Taste Play / Pause
 
-#define ButtonDown A1             // Taste Zurück / Leiser
-#define ButtonUp A2               // Taste Vor / Lauter
+#define ButtonDown A2             // Taste Zurück / Leiser
+#define ButtonUp A1               // Taste Vor / Lauter
 
 #ifdef FIVEBUTTONS
 
@@ -787,16 +791,16 @@ void resetSettings() {                     // my Settings auf defaultwerte zurü
 #endif
   mySettings.cookie = myCookie;
   mySettings.version = 2;
-  mySettings.maxVolume = 25;               // max.Lautstärke Lautsprecher
+  mySettings.maxVolume = 18;               // max.Lautstärke Lautsprecher
   mySettings.minVolume = 5;                // min.Lautstärke Lautsprecher
-  mySettings.initVolume = 15;              // Start-Lautstärke Lautsprecher
+  mySettings.initVolume = 5;              // Start-Lautstärke Lautsprecher
 #ifdef EarPhone
   mySettings.maxEarVol = 20;               // max.Lautstärke Kopfhörer
   mySettings.minEarVol = 3;                // min.Lautstärke Kopfhörer
   mySettings.initEarVol = 10;              // Start-Lautstärke Kopfhörer
 #endif
   mySettings.eq = 1;                       // Equalizer Normal
-  mySettings.standbyTimer = 5;             // Standbytimer auf 5 min
+  mySettings.standbyTimer = 10;             // Standbytimer auf 5 min
   mySettings.invertVolumeButtons = false;  // Funktion der Vol-Tasten umkehren AUS
   mySettings.shortCuts[0].folder = 0;      // kein Shortcut Pausetaste
   mySettings.shortCuts[1].folder = 0;      // kein Shortcut Vor-taste
@@ -4325,8 +4329,10 @@ void setup()
 // *******************************************************************************
 void loop()
 {
+#ifndef CardPause
   do
   {
+#endif
 
     // ************************ Wecker **** Hardwareerweiterung erforderlich ***********************
 #ifdef Wecker
@@ -4381,7 +4387,9 @@ void loop()
 
       readButtons();                           // Tasten auslesen
       adminMenu();                             // adminmenü starten
+#ifndef CardPause
       break;
+#endif
     }
 
     // ******************* Pause Taste ****************************************************
@@ -4594,11 +4602,18 @@ void loop()
     }
 #endif
 
+#ifndef CardPause
   }
+#endif  
   // ****************** Ende der Buttons ***********************************
 
   // **************** RFID-Reader - check Karte aufgelegt ******************
+#ifdef CardPause
+  //Pause when card away
+  handleCardReader();
+#endif
 
+#ifndef CardPause
   while (!mfrc522.PICC_IsNewCardPresent());           // bleibe in der Schleife, Solange keine neue Karte aufgelegt
 
   // RFID Karte wurde aufgelegt
@@ -4629,12 +4644,152 @@ void loop()
   }
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
+#endif
 }
 // ************ Main LOOP ENDE *********************************************
 // *************************************************************************
 
 // *************************************************************************
 // ***************** Hilfsprogramme ****************************************
+#ifdef CardPause
+////////////////////// Pause when card away////////////////////////////////////
+static bool hasCard = false;
+
+static byte lastCardUid[4];
+static byte retries;
+static bool lastCardWasUL;
+
+
+const byte PCS_NO_CHANGE     = 0; // no change detected since last pollCard() call
+const byte PCS_NEW_CARD      = 1; // card with new UID detected (had no card or other card before)
+const byte PCS_CARD_GONE     = 2; // card is not reachable anymore
+const byte PCS_CARD_IS_BACK  = 3; // card was gone, and is now back again
+
+
+// routine to handle new cards
+void onNewCard()
+{
+  // ************** Karte ist konfiguriert *****************************
+  if (readCard(&myCard) == true)                      // wenn Karte lesbar
+  {
+    // make random a little bit more "random"
+    randomSeed(millis() + random(1000));
+    
+    if (myCard.cookie == cardCookie                   // überprüfen ob Karte bekannt,
+      && myCard.nfcFolderSettings.folder != 0         // ein Ordner konfiguriert,
+      && myCard.nfcFolderSettings.mode != 0)          // und ein Abspielmodus festgelegt ist
+    {
+      playFolder();                                   //Wiedergabe starten
+    }
+    // ********** neue unbenutzte Karte **********************************
+    else if (myCard.cookie != cardCookie)             // wenn Karte leer - neue Karte konfigurieren
+    {
+        knownCard = false;
+        mp3.playMp3FolderTrack(300);                    // 300- "Oh, eine neue Karte"
+        waitForTrackToFinish();
+        setupCard();                                    // Karte konfigurieren
+
+    }
+  }
+}
+
+
+// routine to detect card away
+byte pollCard()
+{
+  const byte maxRetries = 2;
+
+  if (!hasCard)
+  {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial() && readCard(&myCard))
+    {
+      bool bSameUID = !memcmp(lastCardUid, mfrc522.uid.uidByte, 4);
+      Serial.print(F("IsSameAsLastUID="));
+      Serial.println(bSameUID);
+      // store info about current card
+      memcpy(lastCardUid, mfrc522.uid.uidByte, 4);
+      lastCardWasUL = mfrc522.PICC_GetType(mfrc522.uid.sak) == MFRC522::PICC_TYPE_MIFARE_UL;
+
+      retries = maxRetries;
+      hasCard = true;      
+      return bSameUID ? PCS_CARD_IS_BACK : PCS_NEW_CARD;
+    }
+    //if (readCard(&myCard))    //Sonst funktioniet PauseCard im FreezeDance nicht...?!
+    //{  
+    //}
+    #ifdef Konsole
+      Serial.print(F("readCard(mycard)="));
+      Serial.println(readCard(&myCard));
+    #endif
+    return PCS_NO_CHANGE;
+  }
+  else // hasCard
+  {
+    // perform a dummy read command just to see whether the card is in range
+    byte buffer[18];
+    byte size = sizeof(buffer);
+    if (mfrc522.MIFARE_Read(lastCardWasUL ? 8 : blockAddr, buffer, &size) != MFRC522::STATUS_OK)
+    {
+      if (retries > 0)
+      {
+          retries--;
+      }
+      else
+      {
+          Serial.println(F("card gone"));
+          mfrc522.PICC_HaltA();
+          mfrc522.PCD_StopCrypto1();
+          hasCard = false;
+          return PCS_CARD_GONE;
+      }
+    }
+    else
+    {
+        retries = maxRetries;
+    }
+  }
+  return PCS_NO_CHANGE;
+}
+
+
+// routine to handle cards 
+void handleCardReader()
+{
+  // poll card only every 100ms
+  static uint8_t lastCardPoll = 0;
+  uint8_t now = millis();
+
+  if (static_cast<uint8_t>(now - lastCardPoll) > 100)
+  {
+    lastCardPoll = now;
+    switch (pollCard())
+    {
+    case PCS_NEW_CARD:
+#ifdef Konsole
+    Serial.println(F("New Card detected!"));
+#endif
+      onNewCard();
+      break;
+
+    case PCS_CARD_GONE:
+#ifdef Konsole
+    Serial.println(F("Card gone!"));
+#endif
+      mp3.pause();
+      setstandbyTimer();
+      break;
+
+    case PCS_CARD_IS_BACK:
+#ifdef Konsole
+    Serial.println(F("Card is back!"));
+#endif
+      mp3.start();
+      disablestandbyTimer();
+      break;
+    }    
+  }
+}
+#endif
 
 ////////////////////// Dump Byte Array ////////////////////////////////////
 
